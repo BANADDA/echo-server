@@ -25,7 +25,8 @@ app.post('/start-training', (req, res) => {
     `docker push ${imageTag}`
   ];
 
-  const shellProcess = spawn('cmd', ['/c', commands.join(' && ')]);
+  // Using `sh` instead of `cmd` and `/c`
+  const shellProcess = spawn('sh', ['-c', commands.join(' && ')]);
 
   shellProcess.stdout.on('data', (data) => {
     console.log(`stdout: ${data.toString()}`);
