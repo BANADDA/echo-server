@@ -22,13 +22,13 @@ admin.initializeApp({
 
 const db = admin.firestore();
 
-async function addTrainingJobMetadata(docId, modelId, datasetId, imageTag, computeRequirements) {
+async function addTrainingJobMetadata(docId, modelId, datasetId, imageTag) {
     try {
         const docRef = await db.collection('trainingJobs').add({
             modelId: modelId,
             datasetId: datasetId,
             imageTag: imageTag,
-            computeRequirements: computeRequirements,
+            // computeRequirements: computeRequirements,
             trainingStatus: 'Pending', // Initial status
             createdAt: admin.firestore.FieldValue.serverTimestamp() // Use server-side timestamp
         });

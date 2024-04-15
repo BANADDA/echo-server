@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { spawn } = require('child_process');
-const { addTrainingJobMetadata } = require('./firebase-config');
+const {db, addTrainingJobMetadata } = require('./firebase-config');
 const app = express();
 const port = process.env.PORT || 3000;
 
@@ -10,47 +10,104 @@ app.use(cors());
 app.use(express.json());
 
 app.post('/start-training', (req, res) => {
-  const { docId, modelId, datasetId, computeRequirements } = req.body;
-  console.log(`Received training request for Document ID: ${docId}, Model ID: ${modelId}, Dataset ID: ${datasetId}`);
+    const { docId, modelId, datasetId, computeRequirements } = req.body;
+    console.log(`Received training request for Document ID: ${docId}, Model ID: ${modelId}, Dataset ID: ${datasetId}`);
 
-  const dockerUsername = process.env.DOCKER_USERNAME;
-  const dockerPassword = process.env.DOCKER_PASSWORD;
-  const imageTag = `${dockerUsername}/training_job_${docId}`.toLowerCase();
-  const dockerfilePath = './Trainer/Dockerfile';
-  const contextPath = './Trainer';
+    const dockerUsername = process.env.DOCKER_USERNAME;
+    const dockerPassword = process.env.DOCKER_PASSWORD;
+    const imageTag = `${dockerUsername}/training_job_${docId}`.toLowerCase();
+    const dockerfilePath = './Trainer/Dockerfile';
+    const contextPath = './Trainer';
 
-  const commands = [
-    `echo "${dockerPassword}" | docker login --username "${dockerUsername}" --password-stdin`,
-    `docker build -t ${imageTag} -f ${dockerfilePath} --build-arg MODEL_ID=${modelId} --build-arg DATASET_ID=${datasetId} ${contextPath}`,
-    `docker push ${imageTag}`
-  ];
+    const commands = [
+        `docker login --username ${dockerUsername} --password ${dockerPassword} `,
+        // `echo ${dockerPassword} | docker login --username ${dockerUsername} --password-stdin`,
+        `docker build -t ${imageTag} -f ${dockerfilePath} --build-arg MODEL_ID=${modelId} --build-arg DATASET_ID=${datasetId} ${contextPath}`,
+        `docker push ${imageTag}`
+    ];
 
-  // Using `sh` instead of `cmd` and `/c`
-  const shellProcess = spawn('sh', ['-c', commands.join(' && ')]);
+    const shellProcess = spawn('cmd', ['/c', commands.join(' && ')], { shell: true });
 
-  shellProcess.stdout.on('data', (data) => {
-    console.log(`stdout: ${data.toString()}`);
-  });
+    shellProcess.stdout.on('data', (data) => {
+        console.log(`stdout: ${data.toString()}`);
+    });
 
-  shellProcess.stderr.on('data', (data) => {
-    console.error(`stderr: ${data.toString()}`);
-  });
+    shellProcess.stderr.on('data', (data) => {
+        console.error(`stderr: ${data.toString()}`);
+    });
 
-  shellProcess.on('close', async (code) => {
-    console.log(`Docker operations completed. Exit code: ${code}`);
-    if (code === 0) {
-      try {
-        await addTrainingJobMetadata(docId, modelId, datasetId, imageTag, computeRequirements);
-        res.status(200).send({ message: 'Training job initiated, Docker image pushed, and metadata saved.' });
-      } catch (error) {
-        console.error('Failed to save training job metadata:', error);
-        res.status(500).send({ message: 'Failed to save training job metadata.' });
-      }
-    } else {
-      res.status(500).send({ message: 'Docker operations failed' });
-    }
-  });
+    shellProcess.on('close', async (code) => {
+        console.log(`Docker operations completed. Exit code: ${code}`);
+        if (code === 0) {
+            try {
+                console.log("Creating trainingJobs");
+                await addTrainingJobMetadata(docId, modelId, datasetId, imageTag, computeRequirements);
+                res.status(200).send({ message: 'Training job initiated, Docker image pushed, and metadata saved.' });
+            } catch (error) {
+                console.error('Failed to save training job metadata:', error);
+                res.status(500).send({ message: 'Failed to save training job metadata.' });
+            }
+        } else {
+            res.status(500).send({ message: 'Docker operations failed' });
+        }
+    });
 });
+
+// require('dotenv').config();
+// const express = require('express');
+// const cors = require('cors');
+// const { spawn } = require('child_process');
+// const {db, addTrainingJobMetadata } = require('./firebase-config');
+// const app = express();
+// const port = process.env.PORT || 3000;
+
+// app.use(cors());
+// app.use(express.json());
+
+// app.post('/start-training', (req, res) => {
+//   const { docId, modelId, datasetId, computeRequirements } = req.body;
+//   console.log(`Received training request for Document ID: ${docId}, Model ID: ${modelId}, Dataset ID: ${datasetId}`);
+
+//   const dockerUsername = process.env.DOCKER_USERNAME;
+//   const dockerPassword = process.env.DOCKER_PASSWORD;
+//   const imageTag = `${dockerUsername}/training_job_${docId}`.toLowerCase();
+//   const dockerfilePath = './Trainer/Dockerfile';
+//   const contextPath = './Trainer';
+
+//   const commands = [
+//     `docker login --username mubarakb1999 --password B@mub199919 `,
+//     `docker build -t ${imageTag} -f ${dockerfilePath} --build-arg MODEL_ID=${modelId} --build-arg DATASET_ID=${datasetId} ${contextPath}`,
+//     `docker push ${imageTag}`
+//   ];
+
+//   const shellProcess = spawn('cmd', ['/c', commands.join(' && ')]);
+
+//   shellProcess.stdout.on('data', (data) => {
+//     console.log("Job created successfully");
+//     console.log(`stdout: ${data.toString()}`);
+//   });
+
+//   shellProcess.stderr.on('data', (data) => {
+//     console.error(`stderr: ${data.toString()}`);
+//   });
+
+//   console.log(`Docker operations completed. Exit code`);
+
+//   shellProcess.on('close', async (code) => {
+//     if (code === 0) {
+//       try {
+//         console.log("Creating trainingJobs");
+//         await addTrainingJobMetadata(docId, modelId, datasetId, imageTag, computeRequirements);
+//         res.status(200).send({ message: 'Training job initiated, Docker image pushed, and metadata saved.' });
+//       } catch (error) {
+//         console.error('Failed to save training job metadata:', error);
+//         res.status(500).send({ message: 'Failed to save training job metadata.' });
+//       }
+//     } else {
+//       res.status(500).send({ message: 'Docker operations failed' });
+//     }
+//   });
+// });
 
 // List All Training Jobs
 app.get('/jobs', async (req, res) => {
@@ -96,3 +153,36 @@ app.patch('/jobs/:docId/status', async (req, res) => {
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
+
+//   const commands = [
+//     `echo "${dockerPassword}" | docker login --username "${dockerUsername}" --password-stdin`,
+//     `docker build -t ${imageTag} -f ${dockerfilePath} --build-arg MODEL_ID=${modelId} --build-arg DATASET_ID=${datasetId} ${contextPath}`,
+//     `docker push ${imageTag}`
+//   ];
+
+//   // Using `sh` instead of `cmd` and `/c`
+//   const shellProcess = spawn('sh', ['-c', commands.join(' && ')]);
+
+//   shellProcess.stdout.on('data', (data) => {
+//     console.log(`stdout: ${data.toString()}`);
+//   });
+
+//   shellProcess.stderr.on('data', (data) => {
+//     console.error(`stderr: ${data.toString()}`);
+//   });
+
+//   shellProcess.on('close', async (code) => {
+//     console.log(`Docker operations completed. Exit code: ${code}`);
+//     if (code === 0) {
+//       try {
+//         await addTrainingJobMetadata(docId, modelId, datasetId, imageTag, computeRequirements);
+//         res.status(200).send({ message: 'Training job initiated, Docker image pushed, and metadata saved.' });
+//       } catch (error) {
+//         console.error('Failed to save training job metadata:', error);
+//         res.status(500).send({ message: 'Failed to save training job metadata.' });
+//       }
+//     } else {
+//       res.status(500).send({ message: 'Docker operations failed' });
+//     }
+//   });
+// });
