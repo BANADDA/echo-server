@@ -1,6 +1,10 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const os = require('os');
+const si = require('systeminformation');
+const jwt = require('jsonwebtoken');
+// const bcrypt = require('bcryptjs');
 const { spawn } = require('child_process');
 const { db, addTrainingJobMetadata } = require('./firebase-config');
 const app = express();
@@ -23,73 +27,194 @@ const contract = new web3.eth.Contract(contractABI.abi, contractAddress);
 app.use(cors());
 app.use(express.json());
 
-app.post('/register-volunteer', async (req, res) => {
-  const { name, email } = req.body;
+const bcrypt = require('bcryptjs');
 
-  // Generate a new Ethereum wallet
-  const wallet = web3.eth.accounts.create();
 
-  try {
-      const newVolunteer = await db.collection('volunteers').add({
-          name,
-          email,
-          ethereumAddress: wallet.address,
-          tasksCompleted: 0
-      });
-      // Consider how to handle the private key; you might want to send it in a secure way
-      res.status(201).send({
-          id: newVolunteer.id,
-          ethereumAddress: wallet.address,
-          privateKey: wallet.privateKey, // Be cautious with this practice
-          message: 'Volunteer registered successfully. Please save your private key securely!'
-      });
-  } catch (error) {
-      console.error('Failed to register volunteer:', error);
-      res.status(500).send('Failed to register volunteer');
-  }
-});
 
-app.post('/complete-job', async (req, res) => {
-  const { docId, status, resultsUrl, volunteerAddress } = req.body;
+function generatePassword() {
+    const length = 12;
+    const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let retVal = "";
+    for (let i = 0, n = charset.length; i < length; ++i) {
+        retVal += charset.charAt(Math.floor(Math.random() * n));
+    }
+    return retVal;
+}
 
-  try {
-      // Update the job status and results
-      const docRef = db.collection('trainingJobs').doc(docId);
-      await docRef.update({ trainingStatus: status, resultsUrl: resultsUrl });
+function verifyToken(req, res, next) {
+    const token = req.headers['x-access-token'];
+    if (!token) {
+        return res.status(403).send({ message: 'No token provided.' });
+    }
 
-      // Find volunteer by Ethereum address and increment their task count
-      const volunteerRef = db.collection('volunteers').where('ethereumAddress', '==', volunteerAddress).limit(1);
-      const snapshot = await volunteerRef.get();
-      if (!snapshot.empty) {
-          const volunteerDoc = snapshot.docs[0];
-          const updatedTasks = volunteerDoc.data().tasksCompleted + 1;
-          await db.collection('volunteers').doc(volunteerDoc.id).update({ tasksCompleted: updatedTasks });
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(401).send({ message: 'Unauthorized!' });
+        }
+        req.volunteerId = decoded.id;
+        next();
+    });
+}
 
-          // Optionally mint tokens after updating tasks
-          const tokensInWei = web3.utils.toWei('100', 'ether'); // Reward 100 tokens, adjust as needed
-          const receipt = await contract.methods.mint(volunteerAddress, tokensInWei)
-              .send({ from: web3.eth.defaultAccount });
-          console.log(`Tokens minted: Transaction receipt: ${receipt.transactionHash}`);
-
-          res.status(200).send({ message: 'Job marked as completed and volunteer rewarded successfully.' });
-      } else {
-          throw new Error('Volunteer not found');
-      }
-  } catch (error) {
-      console.error(`Failed to mark job as completed or reward volunteer:`, error);
-      res.status(500).send({ message: 'Failed to update job status or reward volunteer.' });
-  }
-});
-
-app.get('/jobs', async (req, res) => {
+async function getAdvancedSystemDetails() {
     try {
-        // Query the 'trainingJobs' collection to find only jobs with 'trainingStatus' set to 'pending'
-        const jobsSnapshot = await db.collection('trainingJobs').where('trainingStatus', '==', 'Pending').get();
-        
-        // Map over the documents to extract the data
-        const jobs = jobsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const cpu = await si.cpu();
+        const graphics = await si.graphics();
+        const osInfo = await si.osInfo();
+        const network = await si.networkInterfaces();
 
-        // Return the jobs as a JSON response
+        return {
+            cpu: {
+                manufacturer: cpu.manufacturer,
+                brand: cpu.brand,
+                speed: cpu.speed,
+                cores: cpu.cores,
+                physicalCores: cpu.physicalCores,
+            },
+            os: {
+                platform: osInfo.platform,
+                distro: osInfo.distro,
+                release: osInfo.release,
+            },
+            graphics: graphics.controllers.map(gpu => ({
+                model: gpu.model,
+                vram: gpu.vram,
+            })),
+            network: network.map(interface => ({
+                iface: interface.iface,
+                ip4: interface.ip4,
+                mac: interface.mac,
+            }))
+        };
+    } catch (error) {
+        console.error('Failed to fetch system information:', error);
+        throw error;  // Ensure to handle this in the calling function
+    }
+}
+
+app.post('/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    try {
+        const volunteerRef = db.collection('volunteers').where('email', '==', email).limit(1);
+        const snapshot = await volunteerRef.get();
+
+        if (snapshot.empty) {
+            return res.status(401).send({ message: 'Login failed: Volunteer not found.' });
+        }
+
+        const volunteer = snapshot.docs[0].data();
+        const passwordIsValid = await bcrypt.compare(password, volunteer.passwordHash);
+
+        if (!passwordIsValid) {
+            return res.status(401).send({ message: 'Login failed: Incorrect password.' });
+        }
+
+        // Retrieve advanced system details
+        const systemDetails = await getAdvancedSystemDetails();
+
+        // Generate a token
+        const token = jwt.sign({ id: snapshot.docs[0].id }, process.env.JWT_SECRET, {
+            expiresIn: 86400 // expires in 24 hours
+        });
+
+        // Store login details and system info in Firestore
+        await db.collection('loginRecords').add({
+            volunteerId: snapshot.docs[0].id,
+            loginTime: new Date(),
+            systemInfo: systemDetails
+        });
+
+        res.send({
+            message: 'Login successful!',
+            volunteerId: snapshot.docs[0].id,
+            token: token,
+            systemInfo: systemDetails  // Optionally send back to client if needed
+        });
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).send({ message: 'Failed to process login.' });
+    }
+});
+
+app.post('/register-volunteer', async (req, res) => {
+    const { name, email } = req.body;
+    const wallet = web3.eth.accounts.create();
+    const password = generatePassword();
+    console.log('Password', password);
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    try {
+        const newVolunteer = await db.collection('volunteers').add({
+            name,
+            email,
+            ethereumAddress: wallet.address,
+            passwordHash,
+            tasksCompleted: 0
+        });
+        res.status(201).send({
+            id: newVolunteer.id,
+            ethereumAddress: wallet.address,
+            privateKey: wallet.privateKey, // Be cautious with this practice
+            password, // Send password back to user securely
+            message: 'Volunteer registered successfully. Please save your credentials securely!'
+        });
+    } catch (error) {
+        console.error('Failed to register volunteer:', error);
+        res.status(500).send('Failed to register volunteer');
+    }
+});
+
+app.post('/complete-job', verifyToken, async (req, res) => {
+    const { docId, status, resultsUrl, volunteerAddress } = req.body;
+
+    try {
+        // Update the job status and results
+        const docRef = db.collection('trainingJobs').doc(docId);
+        await docRef.update({ trainingStatus: status, resultsUrl: resultsUrl });
+
+        // Find volunteer by Ethereum address and increment their task count
+        const volunteerRef = db.collection('volunteers').where('ethereumAddress', '==', volunteerAddress).limit(1);
+        const snapshot = await volunteerRef.get();
+        if (!snapshot.empty) {
+            const volunteerDoc = snapshot.docs[0];
+            const updatedTasks = volunteerDoc.data().tasksCompleted + 1;
+            await db.collection('volunteers').doc(volunteerDoc.id).update({ tasksCompleted: updatedTasks });
+
+            // Mint tokens after updating tasks
+            const tokensInWei = web3.utils.toWei('100', 'ether'); // Reward 100 tokens, adjust as needed
+            const receipt = await contract.methods.mint(volunteerAddress, tokensInWei)
+                .send({ from: web3.eth.defaultAccount });
+            console.log(`Tokens minted: Transaction receipt: ${receipt.transactionHash}`);
+
+            // Convert the tokens from wei to ether for a more readable format
+            const tokensInEther = web3.utils.fromWei(tokensInWei, 'ether');
+
+            // Create a document in the 'completedJobs' collection
+            await db.collection('completedJobs').add({
+                volunteerName: volunteerDoc.data().name,
+                volunteerId: volunteerDoc.id,
+                ethereumAddress: volunteerAddress,
+                jobId: docId,
+                tokensRewarded: tokensInEther, // Use the actual tokens rewarded in ether
+                transactionHash: receipt.transactionHash,
+                resultsUrl: resultsUrl  // Store the results URL provided by the job completion
+            });
+
+            res.status(200).send({ message: 'Job marked as completed and volunteer rewarded successfully.' });
+        } else {
+            throw new Error('Volunteer not found');
+        }
+    } catch (error) {
+        console.error(`Failed to mark job as completed or reward volunteer:`, error);
+        res.status(500).send({ message: 'Failed to update job status or reward volunteer.' });
+    }
+});
+
+app.get('/jobs', verifyToken, async (req, res) => {
+    try {
+        const jobsSnapshot = await db.collection('trainingJobs').where('trainingStatus', '==', 'Pending').get();
+        const jobs = jobsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
         res.json(jobs);
     } catch (error) {
         console.error('Failed to fetch jobs:', error);
@@ -97,7 +222,7 @@ app.get('/jobs', async (req, res) => {
     }
 });
 
-app.get('/all-jobs', async (req, res) => {
+app.get('/all-jobs', verifyToken, async (req, res) => {
     try {
         const jobsSnapshot = await db.collection('trainingJobs').get();
         const jobs = jobsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
@@ -108,7 +233,7 @@ app.get('/all-jobs', async (req, res) => {
     }
 });
 
-app.get('/jobs/:docId', async (req, res) => {
+app.get('/jobs/:docId', verifyToken, async (req, res) => {
     try {
         const docRef = db.collection('trainingJobs').doc(req.params.docId);
         const doc = await docRef.get();
@@ -123,7 +248,7 @@ app.get('/jobs/:docId', async (req, res) => {
     }
 });
 
-app.patch('/jobs/:docId/status', async (req, res) => {
+app.patch('/jobs/:docId/status', verifyToken, async (req, res) => {
     const { status } = req.body;
     const docRef = db.collection('trainingJobs').doc(req.params.docId);
     try {
@@ -135,24 +260,24 @@ app.patch('/jobs/:docId/status', async (req, res) => {
     }
 });
 
-app.post('/complete-job', async (req, res) => {
-    const { docId, status, resultsUrl, volunteerAddress } = req.body;
+// app.post('/complete-job', verifyToken, async (req, res) => {
+//     const { docId, status, resultsUrl, volunteerAddress } = req.body;
 
-    try {
-        const docRef = db.collection('trainingJobs').doc(docId);
-        await docRef.update({ trainingStatus: status, resultsUrl: resultsUrl });
+//     try {
+//         const docRef = db.collection('trainingJobs').doc(docId);
+//         await docRef.update({ trainingStatus: status, resultsUrl: resultsUrl });
 
-        const tokensInWei = web3.utils.toWei('100', 'ether'); // Reward 100 tokens, adjust as needed
-        const receipt = await contract.methods.mint(volunteerAddress, tokensInWei)
-            .send({ from: web3.eth.defaultAccount });
-        console.log(`Tokens minted: Transaction receipt: ${receipt.transactionHash}`);
+//         const tokensInWei = web3.utils.toWei('100', 'ether'); // Reward 100 tokens, adjust as needed
+//         const receipt = await contract.methods.mint(volunteerAddress, tokensInWei)
+//             .send({ from: web3.eth.defaultAccount });
+//         console.log(`Tokens minted: Transaction receipt: ${receipt.transactionHash}`);
 
-        res.status(200).send({ message: 'Job marked as completed and volunteer rewarded successfully.' });
-    } catch (error) {
-        console.error(`Failed to mark job as completed or reward volunteer:`, error);
-        res.status(500).send({ message: 'Failed to update job status or reward volunteer.' });
-    }
-});
+//         res.status(200).send({ message: 'Job marked as completed and volunteer rewarded successfully.' });
+//     } catch (error) {
+//         console.error(`Failed to mark job as completed or reward volunteer:`, error);
+//         res.status(500).send({ message: 'Failed to update job status or reward volunteer.' });
+//     }
+// });
 
 app.listen(port, () => {
     console.log(`Server running on port ${port}`);
