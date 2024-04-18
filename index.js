@@ -7,56 +7,78 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Web3 and smart contract interaction setup
-const Web3 = require('web3');
-const web3 = new Web3(new Web3.providers.HttpProvider("https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID"));
-const account = web3.eth.accounts.privateKeyToAccount('YOUR_PRIVATE_KEY');
+const { Web3 } = require('web3');
+const web3 = new Web3(new Web3.providers.HttpProvider("http://127.0.0.1:7545"));
+const accountPrivateKey = process.env.GANACHE_PRIVATE_KEY;
+const account = web3.eth.accounts.privateKeyToAccount(accountPrivateKey);
 web3.eth.accounts.wallet.add(account);
 web3.eth.defaultAccount = account.address;
 
-const contractABI = require('./path_to_your_contract_ABI.json');
-const contractAddress = 'YOUR_CONTRACT_ADDRESS';
-const contract = new web3.eth.Contract(contractABI, contractAddress);
+const contractABI = require('./VolunteerToken.json');
+// console.log(contractABI);
+const contractAddress = process.env.GANACHE_CONTRACT_ADDRESS;
+const contract = new web3.eth.Contract(contractABI.abi, contractAddress);
+// const contract = new web3.eth.Contract(contractABI, contractAddress);
 
 app.use(cors());
 app.use(express.json());
 
-app.post('/start-training', (req, res) => {
-    const { docId, modelId, datasetId, computeRequirements } = req.body;
-    const dockerUsername = process.env.DOCKER_USERNAME;
-    const dockerPassword = process.env.DOCKER_PASSWORD;
-    const imageTag = `${dockerUsername}/training_job_${docId}`.toLowerCase();
-    const dockerfilePath = './Trainer/Dockerfile';
-    const contextPath = './Trainer';
+app.post('/register-volunteer', async (req, res) => {
+  const { name, email } = req.body;
 
-    const commands = [
-        `docker login --username ${dockerUsername} --password ${dockerPassword}`,
-        `docker build -t ${imageTag} -f ${dockerfilePath} --build-arg MODEL_ID=${modelId} --build-arg DATASET_ID=${datasetId} ${contextPath}`,
-        `docker push ${imageTag}`
-    ];
+  // Generate a new Ethereum wallet
+  const wallet = web3.eth.accounts.create();
 
-    const shellProcess = spawn('cmd', ['/c', commands.join(' && ')], { shell: true });
+  try {
+      const newVolunteer = await db.collection('volunteers').add({
+          name,
+          email,
+          ethereumAddress: wallet.address,
+          tasksCompleted: 0
+      });
+      // Consider how to handle the private key; you might want to send it in a secure way
+      res.status(201).send({
+          id: newVolunteer.id,
+          ethereumAddress: wallet.address,
+          privateKey: wallet.privateKey, // Be cautious with this practice
+          message: 'Volunteer registered successfully. Please save your private key securely!'
+      });
+  } catch (error) {
+      console.error('Failed to register volunteer:', error);
+      res.status(500).send('Failed to register volunteer');
+  }
+});
 
-    shellProcess.stdout.on('data', (data) => {
-        console.log(`stdout: ${data.toString()}`);
-    });
+app.post('/complete-job', async (req, res) => {
+  const { docId, status, resultsUrl, volunteerAddress } = req.body;
 
-    shellProcess.stderr.on('data', (data) => {
-        console.error(`stderr: ${data.toString()}`);
-    });
+  try {
+      // Update the job status and results
+      const docRef = db.collection('trainingJobs').doc(docId);
+      await docRef.update({ trainingStatus: status, resultsUrl: resultsUrl });
 
-    shellProcess.on('close', async (code) => {
-        if (code === 0) {
-            try {
-                await addTrainingJobMetadata(docId, modelId, datasetId, imageTag, computeRequirements);
-                res.status(200).send({ message: 'Training job initiated, Docker image pushed, and metadata saved.' });
-            } catch (error) {
-                console.error('Failed to save training job metadata:', error);
-                res.status(500).send({ message: 'Failed to save training job metadata.' });
-            }
-        } else {
-            res.status(500).send({ message: 'Docker operations failed' });
-        }
-    });
+      // Find volunteer by Ethereum address and increment their task count
+      const volunteerRef = db.collection('volunteers').where('ethereumAddress', '==', volunteerAddress).limit(1);
+      const snapshot = await volunteerRef.get();
+      if (!snapshot.empty) {
+          const volunteerDoc = snapshot.docs[0];
+          const updatedTasks = volunteerDoc.data().tasksCompleted + 1;
+          await db.collection('volunteers').doc(volunteerDoc.id).update({ tasksCompleted: updatedTasks });
+
+          // Optionally mint tokens after updating tasks
+          const tokensInWei = web3.utils.toWei('100', 'ether'); // Reward 100 tokens, adjust as needed
+          const receipt = await contract.methods.mint(volunteerAddress, tokensInWei)
+              .send({ from: web3.eth.defaultAccount });
+          console.log(`Tokens minted: Transaction receipt: ${receipt.transactionHash}`);
+
+          res.status(200).send({ message: 'Job marked as completed and volunteer rewarded successfully.' });
+      } else {
+          throw new Error('Volunteer not found');
+      }
+  } catch (error) {
+      console.error(`Failed to mark job as completed or reward volunteer:`, error);
+      res.status(500).send({ message: 'Failed to update job status or reward volunteer.' });
+  }
 });
 
 app.get('/jobs', async (req, res) => {
