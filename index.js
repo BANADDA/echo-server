@@ -8,7 +8,7 @@ const jwt = require('jsonwebtoken');
 const { spawn } = require('child_process');
 const { db, addTrainingJobMetadata } = require('./firebase-config');
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8000;
 
 // Web3 and smart contract interaction setup
 const { Web3 } = require('web3');
@@ -29,7 +29,7 @@ app.use(express.json());
 
 const bcrypt = require('bcryptjs');
 
-app.post('/start-training', (req, res) => {
+app.post('/start-training', async (req, res) => {
     const { docId, modelId, datasetId, computeRequirements } = req.body;
     const dockerUsername = process.env.DOCKER_USERNAME;
     const dockerPassword = process.env.DOCKER_PASSWORD;
@@ -37,19 +37,13 @@ app.post('/start-training', (req, res) => {
     const dockerfilePath = './Trainer/Dockerfile';
     const contextPath = './Trainer';
 
-    // Read environment variables
-    const ganacheUrl = process.env.GANACHE_URL;
-    const contractAddress = process.env.CONTRACT_ADDRESS;
-    const contractAbi = process.env.CONTRACT_ABI;  // Make sure it's a stringified JSON
-    const accountAddress = process.env.ACCOUNT_ADDRESS;
-
     const commands = [
         `docker login --username ${dockerUsername} --password ${dockerPassword}`,
         `docker build -t ${imageTag} -f ${dockerfilePath} ` +
-        `--build-arg GANACHE_URL=${ganacheUrl} ` +
-        `--build-arg CONTRACT_ADDRESS=${contractAddress} ` +
-        `--build-arg CONTRACT_ABI='${contractAbi}' ` +
-        `--build-arg ACCOUNT_ADDRESS=${accountAddress} ` +
+        `--build-arg GANACHE_URL=${process.env.GANACHE_URL} ` +
+        `--build-arg CONTRACT_ADDRESS=${process.env.CONTRACT_ADDRESS} ` +
+        `--build-arg CONTRACT_ABI='${process.env.CONTRACT_ABI}' ` +
+        `--build-arg ACCOUNT_ADDRESS=${process.env.ACCOUNT_ADDRESS} ` +
         `--build-arg MODEL_ID=${modelId} --build-arg DATASET_ID=${datasetId} ${contextPath}`,
         `docker push ${imageTag}`
     ];
@@ -66,18 +60,19 @@ app.post('/start-training', (req, res) => {
 
     shellProcess.on('close', async (code) => {
         if (code === 0) {
-            // Your logic to handle successful Docker operations
-            console.log("Docker operations completed successfully.");
-            res.status(200).send({ message: 'Training job initiated, Docker image pushed, and metadata saved.' });
+            try {
+                console.log("Docker operations completed successfully.");
+                const metadataId = await addTrainingJobMetadata(docId, modelId, datasetId, imageTag, computeRequirements);
+                res.status(200).send({ message: 'Training job initiated, Docker image pushed, metadata saved.', metadataId: metadataId });
+            } catch (error) {
+                console.error('Failed to save training job metadata:', error);
+                res.status(500).send({ message: 'Failed to save training job metadata.' });
+            }
         } else {
             console.error('Docker operations failed.');
             res.status(500).send({ message: 'Docker operations failed' });
         }
     });
-});
-
-app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
 });
 
 function generatePassword() {
