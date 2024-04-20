@@ -29,7 +29,56 @@ app.use(express.json());
 
 const bcrypt = require('bcryptjs');
 
+app.post('/start-training', (req, res) => {
+    const { docId, modelId, datasetId, computeRequirements } = req.body;
+    const dockerUsername = process.env.DOCKER_USERNAME;
+    const dockerPassword = process.env.DOCKER_PASSWORD;
+    const imageTag = `${dockerUsername}/training_job_${docId}`.toLowerCase();
+    const dockerfilePath = './Trainer/Dockerfile';
+    const contextPath = './Trainer';
 
+    // Read environment variables
+    const ganacheUrl = process.env.GANACHE_URL;
+    const contractAddress = process.env.CONTRACT_ADDRESS;
+    const contractAbi = process.env.CONTRACT_ABI;  // Make sure it's a stringified JSON
+    const accountAddress = process.env.ACCOUNT_ADDRESS;
+
+    const commands = [
+        `docker login --username ${dockerUsername} --password ${dockerPassword}`,
+        `docker build -t ${imageTag} -f ${dockerfilePath} ` +
+        `--build-arg GANACHE_URL=${ganacheUrl} ` +
+        `--build-arg CONTRACT_ADDRESS=${contractAddress} ` +
+        `--build-arg CONTRACT_ABI='${contractAbi}' ` +
+        `--build-arg ACCOUNT_ADDRESS=${accountAddress} ` +
+        `--build-arg MODEL_ID=${modelId} --build-arg DATASET_ID=${datasetId} ${contextPath}`,
+        `docker push ${imageTag}`
+    ];
+
+    const shellProcess = spawn('cmd', ['/c', commands.join(' && ')], { shell: true });
+
+    shellProcess.stdout.on('data', (data) => {
+        console.log(`stdout: ${data.toString()}`);
+    });
+
+    shellProcess.stderr.on('data', (data) => {
+        console.error(`stderr: ${data.toString()}`);
+    });
+
+    shellProcess.on('close', async (code) => {
+        if (code === 0) {
+            // Your logic to handle successful Docker operations
+            console.log("Docker operations completed successfully.");
+            res.status(200).send({ message: 'Training job initiated, Docker image pushed, and metadata saved.' });
+        } else {
+            console.error('Docker operations failed.');
+            res.status(500).send({ message: 'Docker operations failed' });
+        }
+    });
+});
+
+app.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+});
 
 function generatePassword() {
     const length = 12;
@@ -226,12 +275,28 @@ app.get('/all-jobs', verifyToken, async (req, res) => {
     try {
         const jobsSnapshot = await db.collection('trainingJobs').get();
         const jobs = jobsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        if (jobs.length === 0) {
+            return res.status(200).json({ message: "No training jobs available" });
+        }
+
         res.json(jobs);
     } catch (error) {
         console.error('Failed to fetch jobs:', error);
         res.status(500).send('Failed to fetch jobs');
     }
 });
+
+// app.get('/all-jobs', verifyToken, async (req, res) => {
+//     try {
+//         const jobsSnapshot = await db.collection('trainingJobs').get();
+//         const jobs = jobsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+//         res.json(jobs);
+//     } catch (error) {
+//         console.error('Failed to fetch jobs:', error);
+//         res.status(500).send('Failed to fetch jobs');
+//     }
+// });
 
 app.get('/jobs/:docId', verifyToken, async (req, res) => {
     try {

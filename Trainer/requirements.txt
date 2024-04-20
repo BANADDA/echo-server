@@ -3,3 +3,4 @@ pandas
 transformers
 datasets
 torch
+web3

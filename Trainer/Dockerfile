@@ -4,6 +4,22 @@ FROM python:3.8-slim
 # Set the working directory in the container
 WORKDIR /usr/src/app
 
+# Pass build arguments into the environment
+ARG GANACHE_URL
+ARG CONTRACT_ADDRESS
+ARG CONTRACT_ABI
+ARG ACCOUNT_ADDRESS
+ARG MODEL_ID
+ARG DATASET_ID
+
+# Set environment variables
+ENV GANACHE_URL=$GANACHE_URL
+ENV CONTRACT_ADDRESS=$CONTRACT_ADDRESS
+ENV CONTRACT_ABI=$CONTRACT_ABI
+ENV ACCOUNT_ADDRESS=$ACCOUNT_ADDRESS
+ENV MODEL_ID=$MODEL_ID
+ENV DATASET_ID=$DATASET_ID
+
 # Copy the requirements file into the container at /usr/src/app
 COPY requirements.txt ./
 
@@ -14,5 +30,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Define the script to run when the container launches. CMD can be overridden with additional arguments.
-ENTRYPOINT ["python", "./train_model.py"]
-CMD ["--model-id", "default_model_id", "--dataset-id", "default_dataset_id"]
+CMD ["python", "./train_model.py"]
